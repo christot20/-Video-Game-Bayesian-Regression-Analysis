@@ -1,0 +1,791 @@
+---
+title: "Final Project LOL"
+date: 'Due: Wednesday 12/19 at 11:59am, Canvas submission'
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+## The Data
+
+The dataset I have chosen to conduct my regression analysis is the [(LoL) League of Legends Ranked Games dataset](https://www.kaggle.com/datasets/datasnaek/league-of-legends/?select=games.csv). This data looks at ranked League of Legends games played during season 9 in the EUW region. This dataset was collected using the Riot Games API, which makes it easy to look up and collect information on a users ranked history and collect their games.
+
+```{r setup, results=F, message=FALSE, error=FALSE, warning=FALSE}
+# Load packages
+library(ggplot2)
+library(rstanarm)
+library(bayesplot)
+library(bayesrules)
+library(tidyverse)
+library(tidybayes)
+library(dplyr)
+library(broom.mixed)
+library(interactions)
+```
+
+To preface this analysis, one must first understand the game of League of Legends, or LOL for short. In LOL, two 5 person teams fight to destroy each others nexus and get to choose and ban a champion, each with a different set of skills and abilities, and 2 summoner spells to do so. Along the way, the players must both fight each other, destroy objectives such as towers and inhibitors, and strategize effectively to reach the opponent's nexus. There are also several monsters that teams can defeat to buff them as well, such as Rift Herald, Baron Nashor, and an assorted set of Dragons.
+
+We will use `lol_data` to build various models of League of Legends `gameDuration`. Throughout, we'll utilize weakly informative priors and a basic understanding that LOL games usually are [30 minutes](https://www.leagueofgraphs.com/stats/game-durations) but can range from 25-35 minutes. We will asses an array of different predictors and combinations to determine what can provide us the best fit for predicting the game duration of a League of Legends game. A base criteria for these games is there at least needs to be one tower, one inhibitor, and one champion kill for each game. This is to mitigate the amount of games that teams may have forfeited due to a player leaving or trolling.
+
+```{r}
+lol_data <- read.csv("games.csv",
+                    sep=",",
+                    na.strings=c(""," ","NA","N/A")
+)
+head(lol_data)
+```
+
+## Setting Up the Data
+
+Transforming data to fit baseline of at least one kill, tower, and inhibitor
+
+```{r}
+lol_data <- lol_data[!(lol_data$firstBlood == 0 | lol_data$firstTower == 0 | lol_data$firstInhibitor == 0), ]
+```
+
+```{r}
+nrow(lol_data)
+```
+
+```{r}
+colnames(lol_data)
+```
+
+We can clean up our data by omitting unnecessary columns
+
+```{r}
+lol_data <- subset(lol_data, select = -c(t2_ban1, t2_ban2, t2_ban3, t2_ban4, t2_ban5, t1_ban1, t1_ban2, t1_ban3, t1_ban4, t1_ban5, t1_champ1_sum1, t1_champ2_sum1, t1_champ3_sum1, t1_champ4_sum1, t1_champ5_sum1, t2_champ5_sum1, t2_champ1_sum1, t2_champ2_sum1, t2_champ3_sum1, t2_champ4_sum1, t2_champ5_sum1, t1_champ1_sum2, t1_champ2_sum2, t1_champ3_sum2, t1_champ4_sum2, t1_champ5_sum2, t2_champ1_sum2, t2_champ1_sum2, t2_champ2_sum2, t2_champ3_sum2, t2_champ4_sum2, t2_champ5_sum2, t1_champ1id, t1_champ2id, t1_champ3id, t1_champ4id, t1_champ5id, t2_champ1id, t2_champ2id, t2_champ3id, t2_champ4id, t2_champ5id))
+
+colnames(lol_data)
+```
+
+We can also covert some of the columns to factors for team 1 and team 2 for ease of visualization and interpretation
+
+```{r}
+lol_data$winner <- as.factor(lol_data$winner)
+lol_data$firstBlood <- as.factor(lol_data$firstBlood)
+lol_data$firstTower <- as.factor(lol_data$firstTower)
+lol_data$firstInhibitor <- as.factor(lol_data$firstInhibitor)
+lol_data$firstBaron <- as.factor(lol_data$firstBaron)
+lol_data$firstDragon <- as.factor(lol_data$firstDragon)
+lol_data$firstRiftHerald <- as.factor(lol_data$firstRiftHerald)
+```
+
+```{r}
+head(lol_data)
+```
+
+## Summary Analysis
+
+Here are some visualizations and statistics to help better understand our data and what we are working with.
+
+```{r}
+summary(lol_data)
+```
+
+Some conclusions we can make here:
+
+-   The mean game time is around 1930 seconds (roughly 32 minutes)
+
+-   Game duration lies mostly between 1632 and 2196
+
+-   Team 1 has won more games, has more first bloods, towers, inhibitors, and rift heralds
+
+-   Team 2 has more first barons and dragons.
+
+-   Team 1's tower, inhibitor, and herald kills are higher than Team 2's which is reflected from them getting the first of each more often than not.
+
+-   Team 2's dragon and baron kills are higher than Team 1's which is reflected from them getting the first of each more often than not.
+
+## Visualizations
+
+We can use ggplot do visualize some of our findings
+
+### Response Distribution
+
+```{r}
+ggplot(lol_data, aes(x = gameDuration)) +
+  geom_histogram(binwidth = 60, fill = "blue", color = "black") +
+  labs(x = "Game Duration (seconds)", y = "Frequency", title = "Distribution of Game Duration") +
+  theme_minimal()
+```
+
+Game duration seems to be a bit right-skewed
+
+### First Comparisons
+
+```{r}
+ggplot(lol_data, aes(x = winner, fill = winner)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "Winners")
+```
+
+```{r}
+ggplot(lol_data, aes(x = firstBlood, fill = firstBlood)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "First Bloods")
+```
+
+```{r}
+ggplot(lol_data, aes(x = firstTower, fill = firstTower)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "First Towers")
+```
+
+```{r}
+ggplot(lol_data, aes(x = firstInhibitor, fill = firstInhibitor)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "First Inhibitors")
+```
+
+```{r}
+ggplot(lol_data, aes(x = firstDragon, fill = firstDragon)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "First Dragons")
+```
+
+```{r}
+ggplot(lol_data, aes(x = firstRiftHerald, fill = firstRiftHerald)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "First Rift Heralds")
+```
+
+```{r}
+ggplot(lol_data, aes(x = firstBaron, fill = firstBaron)) + 
+      geom_bar() + 
+      theme(text = element_text(size=9)) +
+      labs(y = "First Barons")
+```
+
+These all are consistent with our previous summary findings about first categories
+
+### Total Objectives Comparisons
+
+```{r}
+ggplot(lol_data, aes(x = t1_towerKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+ggplot(lol_data, aes(x = t2_towerKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+tower_kills <- data.frame(Team = c("T1", "T2"),
+                          Kills = c(sum(lol_data$t1_towerKills, na.rm = TRUE), 
+                                    sum(lol_data$t2_towerKills, na.rm = TRUE)))
+
+ggplot(tower_kills, aes(x = Team, y = Kills, fill = Team)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Team", y = "Total Tower Kills", title = "Comparison of Tower Kills between T1 and T2")
+```
+
+More often than not, both teams tend to kill \>6 towers per game
+
+```{r}
+ggplot(lol_data, aes(x = t1_inhibitorKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+ggplot(lol_data, aes(x = t2_inhibitorKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+# Calculate the total number of inhibitor kills for each team
+inhibitor_kills <- data.frame(Team = c("T1", "T2"),
+                              Kills = c(sum(lol_data$t1_inhibitorKills, na.rm = TRUE), 
+                                        sum(lol_data$t2_inhibitorKills, na.rm = TRUE)))
+
+ggplot(inhibitor_kills, aes(x = Team, y = Kills, fill = Team)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Team", y = "Total Inhibitor Kills", title = "Comparison of Inhibitor Kills between T1 and T2")
+```
+
+Games usually end with 0 to 2 inhibitors being destroyed, likely due to late game forfeits or steam rolls (which is often the case in many games)
+
+```{r}
+ggplot(lol_data, aes(x = t1_dragonKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+ggplot(lol_data, aes(x = t2_dragonKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+# Calculate the total number of dragon kills for each team
+dragon_kills <- data.frame(Team = c("T1", "T2"),
+                           Kills = c(sum(lol_data$t1_dragonKills, na.rm = TRUE), 
+                                     sum(lol_data$t2_dragonKills, na.rm = TRUE)))
+
+ggplot(dragon_kills, aes(x = Team, y = Kills, fill = Team)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Team", y = "Total Dragon Kills", title = "Comparison of Dragon Kills between T1 and T2")
+```
+
+Dragon kills comfortably lie within the 0-2 range
+
+```{r}
+ggplot(lol_data, aes(x = t1_riftHeraldKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+ggplot(lol_data, aes(x = t2_riftHeraldKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+# Calculate the total number of rift herald kills for each team
+riftHerald_kills <- data.frame(Team = c("T1", "T2"),
+                               Kills = c(sum(lol_data$t1_riftHeraldKills, na.rm = TRUE), 
+                                         sum(lol_data$t2_riftHeraldKills, na.rm = TRUE)))
+
+ggplot(riftHerald_kills, aes(x = Team, y = Kills, fill = Team)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Team", y = "Total Rift Herald Kills", title = "Comparison of Rift Herald Kills between T1 and T2")
+```
+
+Rift herald only spawns from 9:50 - 19:45 during the game and is most often only taken once if at all
+
+```{r}
+ggplot(lol_data, aes(x = t1_baronKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+ggplot(lol_data, aes(x = t2_baronKills)) + 
+      geom_bar() + 
+      theme(text = element_text(size=10)) +
+      labs(y = "Count")
+```
+
+```{r}
+# Calculate the total number of baron kills for each team
+baron_kills <- data.frame(Team = c("T1", "T2"),
+                          Kills = c(sum(lol_data$t1_baronKills, na.rm = TRUE), 
+                                    sum(lol_data$t2_baronKills, na.rm = TRUE)))
+
+ggplot(baron_kills, aes(x = Team, y = Kills, fill = Team)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Team", y = "Total Baron Kills", title = "Comparison of Baron Kills between T1 and T2")
+```
+
+Baron spawns after the rift herald and usually is game over if taken and used properly, hence why the amount taken is usually 0 or 1 as sometimes games end before it can be taken
+
+## Base Model and Prior Modeling
+
+Lets start off with a base model to see if we can get insight from just the winner of the match
+
+```{r}
+base <- stan_glm(gameDuration ~ winner,
+  data = lol_data, family = gaussian, 
+  prior_intercept = normal(1800, 150, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+```{r}
+prior_summary(base) 
+```
+
+A prior predictive check can be used to see what we can potentially expect from the data alone and what the stan model viewed as appropriate for our predictions
+
+```{r}
+base_priors <- update(base, prior_PD = TRUE)
+# 200 prior model lines
+lol_data %>%
+  add_fitted_draws(base, n = 200) %>%
+  ggplot(aes(x = winner, y = gameDuration)) +
+    geom_line(aes(y = .value, group = .draw), alpha = 0.05)
+
+# 4 prior simulated datasets
+set.seed(3)
+lol_data %>%
+  add_predicted_draws(base, n = 4) %>%
+  ggplot(aes(x = winner, y = gameDuration)) +
+    geom_point(aes(y = .prediction, group = .draw)) + 
+    facet_wrap(~ .draw)
+```
+
+Prior distribution expects the games to range from 1910 - 1945 seconds as expected
+
+Game duration lies between 500-3500 seconds which falls in line with our summary
+
+Prior distribution expects games to last longer if team 2 wins as compared to team 1
+
+```{r}
+mcmc_trace(base, size = .1)
+```
+
+Plots look fast mixing and consistent
+
+```{r}
+rhat(base)
+```
+
+Rhat close to 1 and not \>1.05, good
+
+```{r}
+neff_ratio(base)
+```
+
+neff ratio is a little high but still acceptable, \>.10 which is good
+
+```{r}
+tidy(base, effects = c("fixed", "aux"),
+     conf.int = TRUE, conf.level = 0.95)
+```
+
+Overall the model could work, but more investigation should be done to improve what we have
+
+## Interaction Investigation
+
+Lets see if there are some interactions we can expect
+
+Speaking from experience in playing the game myself, I predict the dragon and baron kills will have a big impact on the game duration due to the buffs they give each member of the team being crucial to winning
+
+```{r}
+int <- stan_glm(gameDuration ~ t1_dragonKills:t2_dragonKills,
+  data = lol_data, family = gaussian, 
+  prior_intercept = normal(1800, 150, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+```{r}
+int2 <- stan_glm(gameDuration ~ t1_baronKills:t2_baronKills,
+  data = lol_data, family = gaussian, 
+  prior_intercept = normal(1800, 150, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+```{r}
+summary(int)
+```
+
+```{r}
+summary(int2)
+```
+
+Summary stats look promising with both values not containing 0 for their 95% CI showing they are significant and can be useful
+
+```{r}
+# Extract the posterior samples
+posterior_samples <- as.matrix(int)
+posterior_samples2 <- as.matrix(int2)
+
+# Plot the posterior distribution of the interaction term
+mcmc_hist(posterior_samples, pars = c("t1_dragonKills:t2_dragonKills"))
+
+mcmc_hist(posterior_samples2, pars = c("t1_baronKills:t2_baronKills"))
+```
+
+The predictors don't look skewed either, looks good.
+
+We can canclude that there may be a potential interaction between dragon kills and baron kills for each team
+
+We can utilize this info later on upon building a better model
+
+## Main Model
+
+Let's assess how much getting a jump start in the game does for determining the length of the game
+
+```{r}
+main <- stan_glm(gameDuration ~ winner + firstBlood + firstTower + firstDragon + firstBaron,
+  data = lol_data, family = gaussian, 
+  prior_intercept = normal(1800, 150, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+```{r}
+prior_summary(main) 
+```
+
+```{r}
+mcmc_trace(main, size = .1)
+```
+
+Chains look normal
+
+```{r}
+rhat(main)
+```
+
+```{r}
+neff_ratio(main)
+```
+
+Rhat looks good, some of the neff ratio values are still high but acceptable for now
+
+```{r}
+tidy(main, effects = c("fixed", "aux"),
+     conf.int = TRUE, conf.level = 0.95)
+```
+
+From the tidy output, it looks like winner, firstBlood, and firstTower lose their significance when adding other predictors since their 95% CI range includes 0. We'll use this info later for refining our model
+
+```{r}
+newdata <- data.frame(winner = factor(1, levels = levels(lol_data$winner)),
+                      firstBlood = factor(2, levels = levels(lol_data$firstBlood)),
+                      firstTower = factor(2, levels = levels(lol_data$firstTower)),
+                      firstDragon = factor(2, levels = levels(lol_data$firstDragon)),
+                      firstBaron = factor(2, levels = levels(lol_data$firstBaron)))
+
+main_predict <- posterior_predict(
+  main, 
+  newdata = newdata)
+mcmc_areas(main_predict) +  xlab("Game Duration") +
+  ggtitle('Predictive distribution of a League of Legends game where first blood, tower, dragon, baron was team 2 and team 1 won') +
+  theme(plot.title = element_text(size = 7))
+```
+
+Here's an example output of where a game duration may lie if team 1 wins despite being behind from the start. The game is a little later than normal, but to be expected as the team would need time to make the comeback in the first place. However, I believe this is undershooting the true time we could expect from this scenario. We'll verify if this is true after refining our model
+
+## More Predictors
+
+We can add some numerical variables to see how much adding the amount of each objective a team has taken to see how it affects the game duration
+
+```{r}
+ext_main <- stan_glm(gameDuration ~ winner + firstBlood + firstTower + firstDragon + firstBaron + t1_towerKills + t1_inhibitorKills + t1_baronKills + t1_dragonKills + t2_towerKills + t2_inhibitorKills + t2_baronKills + t2_dragonKills,
+  data = lol_data, family = gaussian, 
+  prior_intercept = normal(1800, 150, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+```{r}
+prior_summary(ext_main) 
+```
+
+```{r}
+mcmc_trace(ext_main, size = .1)
+```
+
+Traces look good
+
+```{r}
+rhat(ext_main)
+```
+
+```{r}
+neff_ratio(ext_main)
+```
+
+Rhat looks good, some neff ratios (i.e. firstBlood, firstTower) are now too high to keep and will need to be handled later
+
+```{r}
+tidy(ext_main, effects = c("fixed", "aux"),
+     conf.int = TRUE, conf.level = 0.95)
+```
+
+Here, the predictors winner, firstBlood, and firstTower are not significant due to their 95% CI including 0
+
+```{r}
+# dataframe with the specified values
+newdata_ext <- data.frame(
+  winner = factor(1, levels = levels(lol_data$winner)),
+  firstBlood = factor(2, levels = levels(lol_data$firstBlood)),
+  firstTower = factor(2, levels = levels(lol_data$firstTower)),
+  firstDragon = factor(2, levels = levels(lol_data$firstDragon)),
+  firstBaron = factor(2, levels = levels(lol_data$firstBaron)),
+  t1_towerKills = 7,
+  t1_inhibitorKills = 2,
+  t1_baronKills = 2,
+  t1_dragonKills = 2,
+  t2_towerKills = 3,
+  t2_inhibitorKills = 2,
+  t2_baronKills = 1,
+  t2_dragonKills = 3
+)
+
+ext_main_predict <- posterior_predict(ext_main, newdata = newdata_ext)
+
+mcmc_areas(ext_main_predict) +  
+  xlab("Game Duration") +
+  ggtitle('Predictive distribution of a League of Legends game where first blood, tower, dragon, baron was team 2 and team 1 won, with additional predictors') +
+  theme(plot.title = element_text(size = 8))
+```
+
+After adding a few more variables into play we can see the game gets longer (and expectedly so). Team 1 comes from behind but ends up getting 2 barons and 7 towers making us believe this game will have to go on for a while for the comeback to truly be complete
+
+## Refined Model
+
+Let's now remove the high neff ratio terms from the extended model (i.e. \> 1) and include the interaction terms we deemed useful beforehand
+
+```{r}
+ext_main_int <- stan_glm(gameDuration ~ firstDragon + firstBaron + t1_baronKills + t1_dragonKills + t2_baronKills + t2_dragonKills + t1_baronKills:t2_baronKills + t1_dragonKills:t2_dragonKills,
+  data = lol_data, family = gaussian, 
+  prior_intercept = normal(1800, 150, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+```{r}
+prior_summary(ext_main_int)
+```
+
+```{r}
+mcmc_trace(ext_main_int, size = .1)
+```
+
+So far so good
+
+```{r}
+rhat(ext_main_int)
+```
+
+Rhat looks satisfactory for all predictors
+
+```{r}
+neff_ratio(ext_main_int)
+```
+
+Neff ratios are much more reasonable now and a big improvement from prior models with no value being \> .90
+
+```{r}
+tidy(ext_main_int, effects = c("fixed", "aux"),
+     conf.int = TRUE, conf.level = 0.95)
+```
+
+Every value looks significant from the 95% CI (even the interaction terms!!) due to none of them including 0.
+
+```{r}
+# dataframe with the specified values
+newdata_ext_int <- data.frame(
+  firstDragon = factor(2, levels = levels(lol_data$firstDragon)),
+  firstBaron = factor(2, levels = levels(lol_data$firstBaron)),
+  t1_baronKills = 2,
+  t1_dragonKills = 2,
+  t2_baronKills = 1,
+  t2_dragonKills = 3
+)
+
+ext_main_int_predict <- posterior_predict(ext_main_int, newdata = newdata_ext_int)
+
+mcmc_areas(ext_main_int_predict) +  
+  xlab("Game Duration") +
+  ggtitle('Predictive distribution of a League of Legends game where first dragon, baron was team 2 and team 1 had more baron kills with interaction') +
+  theme(plot.title = element_text(size = 8))
+```
+
+The games seem to drag on even longer with this new model. This is expected since the dragon and baron respawn times are quite long so, as said before, the comeback would realistically take longer than average.
+
+Lets do some model comparisons to verify which model is best
+
+## Model Comparisons
+
+### PP Check
+
+```{r}
+pp_check(main, nreps = 50) + xlab("Game Duration") +
+  ggtitle('Main effects model')
+```
+
+The main model gets a decent amount of area, yet it starts moving too far right and undershoots at the peak
+
+```{r}
+pp_check(ext_main, nreps = 50) + xlab("Game Duration") +
+  ggtitle('Extended Main effects model')
+```
+
+The extended model is objectively better than the main model, but still undershoots area at the peak
+
+```{r}
+pp_check(ext_main_int, nreps = 50) + xlab("Game Duration") +
+  ggtitle('Refined Interaction effects model')
+```
+
+The interaction model is very similar to the extended model which is better than the main model.
+
+The ppchecks show most of the are being covered for the last 2 models with the interaction model doing better around the peak by a small margin
+
+### 10 Fold Cross-Validations
+
+```{r}
+test_sample <- lol_data %>% head(10000)
+nrow(test_sample)
+```
+
+```{r}
+set.seed(84735)
+
+p_main <- prediction_summary(model = main, data = test_sample)
+p_ext_main <- prediction_summary(model = ext_main, data = test_sample)
+p_ext_main_int <- prediction_summary(model = ext_main_int, data = test_sample)
+```
+
+```{r}
+rbind(p_main, p_ext_main, p_ext_main_int)
+```
+
+These are the raw MAE values based on a sample of 10000 observations from the data, we can use these to determine the behavior and bias of each model based on their cross-validation results
+
+```{r}
+set.seed(84735)
+
+cv_main <- prediction_summary_cv(
+  model = main, data = lol_data, k = 10)
+
+cv_extend <- prediction_summary_cv(
+  model = ext_main, data = lol_data, k = 10)
+
+cv_interact <- prediction_summary_cv(
+  model = ext_main_int, data = lol_data, k = 10)
+```
+
+```{r}
+rbind(cv_main$cv, cv_extend$cv, cv_interact$cv)
+```
+
+### Loo Diagnostics
+
+```{r}
+set.seed(34521)
+main_elpd <- loo(main)
+ext_main_elpd <- loo(ext_main)
+ext_main_interact_elpd <- loo(ext_main_int)
+
+main_elpd$estimates
+ext_main_elpd$estimates
+ext_main_interact_elpd$estimates
+```
+
+```{r}
+c(main_elpd$estimates[1], ext_main_elpd$estimates[1], ext_main_interact_elpd$estimates[1])
+
+loo_compare(main_elpd, ext_main_elpd, ext_main_interact_elpd)
+```
+
+The extended model fairs better than the interaction model when comparing their ELPD and MAE. The interaction model does 4337.6 points "worse" for ELPD and is around 16 points higher in its MAE. However, something to consider here is the idea of [overfitting](https://statisticsbyjim.com/regression/overfitting-regression-models/) and how more predictors and affect the model overall and skew our metrics.
+
+Despite the interaction model covering more area, the [MAE](https://stephenallwright.com/good-mae-score/) and ELPD are both worse. This may be due to these values being inflated by the larger number of predictors in the extended model. Furthermore, the extended model contains numerous values with higher than normal Neff Ratios which is a [cause for concern](https://stats.stackexchange.com/questions/296059/effective-sample-size-greater-than-actual-sample-size) about the validity of the model along with predictors that were not significant.
+
+Despite having less predictors, the interaction model garners more area in its predictive posterior distribution while having a similar MAE and good ELPD score too (-309859.7 vs 314197.3) which is a minor (\~1%) difference given the size of these values. However, these interaction terms could also be having an adverse effect on the model leading to these greater errors.
+
+### Overfitting
+
+```{r}
+rbind(p_main, p_ext_main, p_ext_main_int) 
+rbind(cv_main$cv, cv_extend$cv, cv_interact$cv)
+```
+
+Based on the difference between the raw MAE values and the cross-validation MAE values, overfitting does not seem to pose a threat to these models, however we can only truly know this if we are given new data entirely to test the models. Furthermore, the extended model does have a larger (though mostly negligible due to how small it is) difference from the cross-validation MAE compared to the other models.
+
+What is undoubtedly clear is that adding numerical predictors to the model does help the predictions overall and is shown with both the extended and interaction model fairing better than the main model in every aspect.
+
+## Regression Inference
+
+Let's see how the 2 best models fair when conducting a quick hypothesis test to see the Posterior probability of a game around 40 minutes long
+
+We'll use the predictive posterior models we created and visualized earlier to conduct the tests
+
+$$
+H_0: \pi \geq 2500
+$$
+
+$$
+H_a: \pi < 2500
+$$
+
+```{r}
+# Extract the posterior samples
+posterior_samples <- ext_main_int_predict
+
+p_H0 <- mean(posterior_samples >= 2500)
+
+p_Ha <- mean(posterior_samples < 2500)
+
+# Print the results
+cat("Posterior probability of H0 (π ≥ 2500):", p_H0)
+cat("Posterior probability of Ha (π < 2500):", p_Ha)
+```
+
+```{r}
+# Extract the posterior samples
+posterior_samples <- ext_main_predict
+
+p_H0 <- mean(posterior_samples >= 2500)
+
+p_Ha <- mean(posterior_samples < 2500)
+
+# Print the results
+cat("Posterior probability of H0 (π ≥ 2500):", p_H0)
+cat("Posterior probability of Ha (π < 2500):", p_Ha)
+```
+
+Though the two models seemingly predict the actual distribution of the data well, the 2 models have very different outcomes when conducting the test.
+
+The extended model favors the alternate hypothesis while the interaction model clearly favors the null hypothesis. This both coincides with what we saw before from the visualizations and tells us that the extended model favors games that are shorter while the interaction model expects games like this to take longer.
+
+This is also something one should consider when choosing the model. Whether or not the predictions themselves seem realistic given the scenario/circumstances.
+
+To back up what I'm saying, Baron Nashor spawns at 20 minutes and respawns every 6 minutes. Since 3 Barons are killed in both scenarios, the game would have to be at least 38 minutes and only if the teams kill the Baron IMMEDIATELY (which is usually never the case). Therefore, one would expect majority of the area to lie within the \~40 minute range at the very least for when the game would end.
+
+## Conclusion
+
+In conclusion, it is a choice between whether one wants to take the chance of playing with a model that may be susceptible to overfitting for the sake of potentially less error or a slightly higher error model that has interactions but would be less likely to be susceptible to overfitting.
+
+Personally, I say that the refined interaction model is the best model to use for predicting the game duration of a LOL match given our data due to its comparable MAE along with better posterior predictive abilities and lack of evidence for overfitting. Furthermore, based on my experience and game rules, the predictive values it comes up with end up being much more realistic in the grand scheme of things and with other factors such as respawn time considered.
+
+## References
+
+-   <https://www.bayesrulesbook.com/>
+
+-   <https://stats.stackexchange.com/questions/296059/effective-sample-size-greater-than-actual-sample-size>
+
+-   <https://stephenallwright.com/good-mae-score/>
+
+-   <https://discourse.mc-stan.org/t/understanding-looic/13409/6>
+
+-   <https://discourse.mc-stan.org/t/projpred-elpd-goes-down-and-rmse-goes-up-after-x-variables/13153>
+
+-   <https://stats.stackexchange.com/questions/313564/how-does-bayesian-analysis-make-accurate-predictions-using-subjectively-chosen-p>
+
+-   [https://medium.com/\@ooemma83/interpretation-of-evaluation-metrics-for-regression-analysis-mae-mse-rmse-mape-r-squared-and-5693b61a9833](https://medium.com/@ooemma83/interpretation-of-evaluation-metrics-for-regression-analysis-mae-mse-rmse-mape-r-squared-and-5693b61a9833){.uri}
+
+-   <https://statisticsbyjim.com/regression/overfitting-regression-models/>
+
+-   <https://stats.stackexchange.com/questions/9053/how-does-cross-validation-overcome-the-overfitting-problem>
+
+## Honor Pledge
+
+On my honor, I have neither received nor given any unauthorized assistance on this project
+
+Signed: Thomas Christo (tjc260)
